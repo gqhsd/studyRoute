@@ -1047,12 +1047,63 @@ Sending data:多种情况->在多个状态之间传送数据/在生成结果集/
 
 - 等等等等,书中没有继续列举
 
-###### 执行关联查询的过程
+###### 多表查询的关联过程
 
 以union为例:
 
 union查询:将一系列的单个查询放到临时表,然后从临时表读取出所有数据
 
+**Mysql执行关联表的策略(所有的查询都是以下流程):**
 
+MySQL**先在一个表中循环取出单条数据**，然后**再嵌套循环到下一个表中寻找匹配的行**，依次下去，直到找到所有表中匹配的行为止。然后从每个表的行中返回需要的各个列。**Mysql尝试在最后一个关联表中找到所有匹配的行，如果最后一个关联表无法找到更多的行以后，MySQL返回到上一层次关联表，看是否能够找到更多的匹配记录，依此类推迭代执行(也就是等价于左连接,以外表为主,在遇到右外连接的时候会转化成等价的左外链接)**。
+
+```
+SELECT tbl1. col1, tbl2.col2
+FROM tbl1 
+LEFT OUTER JOIN tbl2 USING( col3)
+WHERE tb11. co11 IN(5,6);
+```
 
 ![](/Users/wzw/Desktop/assets/20230627223051.png)
+
+看上图的顺序是,**先从左到右,再从上到下**
+
+![image-20230704203119503](../../../Desktop/assets/image-20230704203119503.png)
+
+因此Mysql的执行计划如下所示
+
+![image-20230704204618380](../../../Desktop/assets/image-20230704204618380.png)
+
+###### 多表查询是怎么优化的
+
+**调整关联顺序**
+
+注意:**STRAIGHT JOIN 可以强行指定执行计划的关联顺序**
+
+```
+示例: 
+前提:actor表200条,film表951条数据,且使用的是inner join,即使调整顺序,结果是等价的(当后面表依赖于前面表的结果时,顺序就不可改变,如左链接或一些子查询)
+
+SELECT film.film id, film.title, film.release_year, actor.actor _id,
+actor.first_name, actor.last_name
+FROM sakila. film
+INNER JOIN sakila.film_actor USING(film_id)
+INNER JOIN sakila.actor USING(actor_id);
+
+设想: Mysql先查询film->film_actor->actor
+结果:从explain可以看出先actor->film_actor->film,因为从actor开始仅需要关联200行数据
+且从执行成本看,从1154减少到了241(执行成本就是磁盘IO的次数)
+```
+
+**问题:**Mysql是怎么得到预估成本最小的顺序呢?->**遍历**每一种可能的顺序
+
+**问题:**如果关联的表数量很多呢?遍历每一种顺序,也就是**n的阶乘**(10✖️9✖️8....),数量太多怎么遍历?->当n大于optimizer_ search_depth(可配置),会选择**贪婪搜索**
+
+------
+
+**对排序优化**
+
+当**无法使用索引排序**时,则会使用**文件排序**:**数据少于排序缓冲区时使用内存"快速排序",多时把数据分块,每块"快速排序",把结果放在磁盘,最后合并并返回结果**
+
+排序算法:
+
